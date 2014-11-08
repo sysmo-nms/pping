@@ -14,16 +14,16 @@ SRC_DIR  = .
 BIN_DIR  = .
 GO_BUILD = $(GO) build
 
-GPING_SRC = $(SRC_DIR)/gping.go
-GPING     = $(BIN_DIR)/gping$(EXTENTION)
+PPING_SRC = $(SRC_DIR)/pping.go
+PPING     = $(BIN_DIR)/pping$(EXTENTION)
 
-compile: $(GPING)
+$(PPING): $(PPING_SRC)
+	$(GO_BUILD) -o $(PPING) $(PPING_SRC)
+	sudo chown root $(PPING)
+	sudo chmod 4555 $(PPING)
 
-$(GPING): $(GPING_SRC)
-	$(GO_BUILD) -o $(GPING) $(GPING_SRC)
-	sudo chown root $(GPING)
-	sudo chmod 4555 $(GPING)
-
+start: $(PPING)
+	$(PPING) --host=192.168.0.5 --timeout=5
 
 clean:
-	rm -f $(GPING)
+	rm -f $(PPING)

@@ -1,8 +1,3 @@
-/*
-Copyright (C) 2014, Sebastien Serre, <sserre.bx@gmail.com>
-This prograph is distributed under the terms of the
-GNU Lesser General Public License (LGPL).
-*/
 package main
 
 import "fmt"
