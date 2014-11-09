@@ -240,14 +240,15 @@ func main() {
         rb = ipv4Payload(rb)
 
         fmt.Println("have payload")
+        payload := reply.Body
 
         reply, err = parseICMPMessage(rb)
         if err != nil { returnError(err); return }
 
-        payload := reply.Body
-
-        fmt.Println("parse success", procId, seqId, payload.GetProcID(), payload.GetSequenceID())
-
+        /*
+            Ignore message if it is of type icmp request. Typicaly, when
+            target machine also send ping packets to me.
+        */
         switch reply.Type {
             case icmpv4EchoRequest: {
                 fmt.Println("continue?")
@@ -257,6 +258,17 @@ func main() {
                 continue
             }
         }
+
+        /* 
+            Ignore icmp replies which does not comme from me, typicaly another
+            pping or *ping process running on the same host with the same target
+            as argument:
+        */
+        if procId != payload.GetProcID() { continue }
+
+        // TODO interpret sequenceId
+
+        fmt.Println("parse success", procId, seqId, payload.GetProcID(), payload.GetSequenceID(), reply.Type)
         break
     }
     returnSuccess()
