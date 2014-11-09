@@ -1,14 +1,12 @@
 UNAME = $(shell uname)
 CYGW  = $(findstring CYGWIN, $(UNAME))
 ifeq ($(CYGW), CYGWIN)
-	GO      = /cygdrive/c/Go/bin/go.exe
-	EXTEND  = .exe
+	GO        = /cygdrive/c/Go/bin/go.exe
+	EXTENTION = .exe
 else
 	GO      = go
-	PERMS   = set_perms
 endif
 
-EXTENTION = $(EXTEND)
 
 SRC_DIR  = .
 BIN_DIR  = .
@@ -24,6 +22,9 @@ $(PPING): $(PPING_SRC)
 
 start: $(PPING)
 	$(PPING) --host=192.168.0.5 --timeout=5
+
+start1: $(PPING)
+	$(PPING) --host=192.168.0.6 --timeout=5
 
 clean:
 	rm -f $(PPING)

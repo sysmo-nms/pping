@@ -8,8 +8,6 @@ import "net"
 import "os"
 import "time"
 
-// used to identify icmp reply from threads
-var packetId int
 
 // ICMP
 const (
@@ -27,11 +25,15 @@ type icmpMessage struct {
 }
 
 type icmpMessageBody interface {
-    Len() int
-    Marshal() ([]byte, error)
+    Len()           int
+    Marshal()       ([]byte, error)
+    GetProcID()     int
+    GetSequenceID() int
 }
 
-// ARGUMENTS HANDLING BEGIN
+
+
+// BEGIN ARGUMENTS HANDLING
 var VersionFlag     bool
 var HostFlag        string
 var WarningFlag     int64
@@ -53,9 +55,9 @@ var TimeoutFlag     int
 func init() {
     flag.BoolVar(&VersionFlag,  "version",  false, "Show version")
     flag.StringVar(&HostFlag,   "host",     "", "Target")
-    flag.IntVar(&TimeoutFlag,   "timeout",  0, "Timeout")
-    flag.Int64Var(&WarningFlag, "warning",  200000000, "responce delay warning in nanoseconds")
-    flag.Int64Var(&CriticalFlag,"critical", 500000000, "responce delay critical in nanoseconds")
+    flag.IntVar(&TimeoutFlag,   "timeout",  5000, "Timeout")
+    flag.Int64Var(&WarningFlag, "warning",  2000, "responce delay warning in millisecond")
+    flag.Int64Var(&CriticalFlag,"critical", 5000, "responce delay critical in millisecond")
     flag.StringVar(&SourceFlag, "source",   "", "From host or ip")
     flag.IntVar(&NumberFlag,    "number",   5, "Number of packets to send")
     flag.IntVar(&IntervalFlag,  "interval", 80000, "Send packet interval")
@@ -73,15 +75,20 @@ func parseFlags() {
         os.Exit(2)
     }
 }
-// ARGUMENTS HANDLING END
+// END ARGUMENTS HANDLING
+
+
 
 func printVersion() {
     fmt.Printf("go_check_icmp V0.1\n")
 }
 
-// ICMP UTILS
-// Marshal returns the binary enconding of the ICMP echo request or
-// reply message m.
+
+/* 
+   ICMP UTILS
+   Marshal returns the binary enconding of the ICMP echo request or
+   reply message m.
+*/
 func (m *icmpMessage) Marshal() ([]byte, error) {
     b := []byte{byte(m.Type), byte(m.Code), 0, 0}
     if m.Body != nil && m.Body.Len() != 0 {
@@ -146,6 +153,14 @@ func (p *icmpEcho) Len() int {
     return 4 + len(p.Data)
 }
 
+func(p *icmpEcho) GetProcID() int {
+    return p.ID
+}
+
+func(p *icmpEcho) GetSequenceID() int {
+    return p.Seq
+}
+
 // Marshal returns the binary enconding of the ICMP echo request or
 // reply message body p.
 func (p *icmpEcho) Marshal() ([]byte, error) {
@@ -167,54 +182,6 @@ func parseICMPEcho(b []byte) (*icmpEcho, error) {
     return p, nil
 }
 
-func Ping(address string, timeout int, identifier string) (err error, alive bool) {
-    err     = Pinger(address, timeout, identifier)
-    alive   = err == nil
-    return err, alive
-}
-
-func Pinger(address string, timeout int, identifier string) (err error) {
-    c, err := net.Dial("ip4:icmp", address)
-    if err != nil {
-        return
-    }
-    c.SetDeadline(time.Now().Add(time.Duration(timeout) * time.Second))
-    defer c.Close()
-
-    typ := icmpv4EchoRequest
-    xid, xseq := os.Getpid()&0xffff, 1
-    wb, err := (&icmpMessage{
-        Type: typ, Code: 0,
-        Body: &icmpEcho{
-            ID: xid, Seq: xseq,
-            Data: bytes.Repeat([]byte(identifier), 3),
-        },
-    }).Marshal()
-    if err != nil {
-        return
-    }
-    if _, err = c.Write(wb); err != nil {
-        return
-    }
-    var m *icmpMessage
-    rb := make([]byte, 20+len(wb))
-    for {
-        if _, err = c.Read(rb); err != nil {
-            return
-        }
-        rb = ipv4Payload(rb)
-        if m, err = parseICMPMessage(rb); err != nil {
-            return
-        }
-        switch m.Type {
-        case icmpv4EchoRequest, icmpv6EchoRequest:
-            continue
-        }
-        break
-    }
-    return
-}
-
 func ipv4Payload(b []byte) []byte {
     if len(b) < 20 {
         return b
@@ -223,41 +190,74 @@ func ipv4Payload(b []byte) []byte {
     return b[hdrlen:]
 }
 
-
-func pingThread() (err error, alive bool, status string) {
-    identifier      := fmt.Sprintf("noctopus-ping%d", packetId)
-    packetId        = packetId + 1
-    startCheck      := time.Now()
-    err, alive      = Ping(HostFlag, TimeoutFlag, identifier)
-    checkLatency    := time.Since(startCheck)
-    msLatency       := checkLatency.Nanoseconds()
-    if msLatency < WarningFlag {
-        status = "ok"
-    } else if msLatency < CriticalFlag {
-        status = "warning"
-    } else {
-        status = "critical"
-    }
-    return err, alive, status
+func returnError(err error) {
+    fmt.Println("error: ", err)
 }
 
-// MAIN
+func returnSuccess() {
+    fmt.Println("ok")
+}
+
 func main() {
     parseFlags()
-    // TODO loop over -n number of check each -i intervals
-    // -w -c percent failures on all checks
-    packetId = 0
-    err, alive, status := pingThread()
+    timeout     := TimeoutFlag
+    host        := HostFlag
 
-    if alive == true {
-        if status == "ok" { // -w -c 
-            fmt.Printf("ICMP OK: success")
-        } else if status == "warning" {
-            fmt.Printf("ICMP WARNING: warning")
-        } else if status == "critical" {
-            fmt.Printf("ICMP CRITICAL: critical")
+    conn, err := net.Dial("ip4:icmp", host)
+    if err != nil { returnError(err); return }
+
+    conn.SetDeadline(time.Now().Add(time.Duration(timeout) * time.Second))
+    defer conn.Close()
+
+    icmpType := icmpv4EchoRequest
+    procId  := os.Getpid()&0xffff
+    seqId   := 1
+
+    wb, err := (&icmpMessage{
+        Type: icmpType,
+        Code: 0,
+        Body: &icmpEcho{
+            ID:     procId,
+            Seq:    seqId,
+            Data:   bytes.Repeat([]byte("gogoping"), 3),
+        },
+    }).Marshal()
+    if err != nil { returnError(err); return }
+
+
+    _, err = conn.Write(wb)
+    if err != nil { returnError(err); return }
+
+    var reply*icmpMessage
+    rb := make([]byte, 20+len(wb))
+    for {
+        fmt.Println("entering loop")
+        _, err = conn.Read(rb)
+        if err != nil { returnError(err); return }
+
+        fmt.Println("have read something")
+
+        rb = ipv4Payload(rb)
+
+        fmt.Println("have payload")
+
+        reply, err = parseICMPMessage(rb)
+        if err != nil { returnError(err); return }
+
+        payload := reply.Body
+
+        fmt.Println("parse success", procId, seqId, payload.GetProcID(), payload.GetSequenceID())
+
+        switch reply.Type {
+            case icmpv4EchoRequest: {
+                fmt.Println("continue?")
+                continue 
+            }
+            case icmpv6EchoRequest: {
+                continue
+            }
         }
-    } else {
-        fmt.Printf("ICMP CRITICAL: %v", err.Error())
+        break
     }
+    returnSuccess()
 }
