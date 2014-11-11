@@ -8,8 +8,16 @@ import "net"
 import "os"
 import "time"
 
+var VersionFlag     bool
+var HostFlag        string
+var SourceFlag      string
+var NumberFlag      int
+var IntervalFlag    int
+var TtlFlag         int
+var TimeoutFlag     int
+var SizeFlag        int
+var Ip6Flag         bool
 
-// ICMP
 const (
     icmpv4EchoRequest = 8
     icmpv4EchoReply   = 0
@@ -25,6 +33,11 @@ type icmpMessage struct {
     Body     icmpMessageBody // body
 }
 
+type ppingEvent struct {
+    From    string
+    SeqId   int
+}
+
 type icmpMessageBody interface {
     Len()           int
     Marshal()       ([]byte, error)
@@ -32,60 +45,60 @@ type icmpMessageBody interface {
     GetSequenceID() int
 }
 
-type controlMsg struct {
-    From    string
-    SeqId   int
-}
+func main() {
+    parseFlags()
+    host     := HostFlag
+    number   := NumberFlag
+    timeout  := time.Duration(TimeoutFlag)  * time.Millisecond
+    interval := time.Duration(IntervalFlag) * time.Millisecond
+    size     := SizeFlag
 
-type controlReply struct {
-    PercentLoss int
-    AverageTime int
-    MaxTime     int
-    MinTime     int
-}
+    var err   error
+    var conn  net.Conn
+    var requestCode int
+    var replyCode   int
+    if Ip6Flag == true {
+        requestCode = icmpv6EchoRequest
+        replyCode   = icmpv6EchoReply
+        conn, err = net.Dial("ip6:icmp", host)
+    } else {
+        requestCode = icmpv4EchoRequest
+        replyCode   = icmpv4EchoReply
+        conn, err = net.Dial("ip4:icmp", host)
+    }
+    if err != nil { fmt.Println(err); os.Exit(1)}
 
-var VersionFlag     bool
-var HostFlag        string
-var SourceFlag      string
-var NumberFlag      int
-var IntervalFlag    int
-var TtlFlag         int
-var TimeoutFlag     int
-var SizeFlag        int
-var Ip6Flag         bool
+    procId := os.Getpid()&0xffff
+    var eventchan chan ppingEvent = make(chan ppingEvent)
 
-func icmpEchoControl(
-        conn        net.Conn,
-        number      int,
-        timeout     time.Duration,
-        eventchan   chan controlMsg,
-        replychan   chan controlReply) {
+    go icmpEchoReceiver(conn,eventchan,replyCode,number,procId)
+    go icmpEchoSender(conn,eventchan,requestCode,number,procId,size,interval)
 
-    var msg controlMsg
+    var msg ppingEvent
+    fmt.Println("timeout: ",timeout)
     for {
         msg = <- eventchan
-        if msg.From == "fromMain" {
+        if msg.From == "fromReceiver" {
+            fmt.Println("from receiver", msg.SeqId)
             number -= 1
+        } else if msg.From == "fromSender" {
+            fmt.Println("from sender", msg.SeqId)
         }
         if number == 0 { break }
     }
     conn.Close()
-    replychan <- controlReply{
-        PercentLoss: 0,
-        AverageTime: 100,
-        MaxTime:     140,
-        MinTime:     50,
-    }
+    fmt.Println("ok")
 }
+
 
 func icmpEchoSender(
     conn        net.Conn,
+    eventchan   chan ppingEvent,
     requestCode int,
-    procId      int,
     number      int,
+    procId      int,
     size        int,
-    interval    time.Duration,
-    control     chan controlMsg) {
+    interval    time.Duration) {
     var err error
     for i := 0; i < number; i++ {
         seqId := i + 1
@@ -100,52 +113,26 @@ func icmpEchoSender(
         }).Marshal()
         _, err = conn.Write(wb)
         if err != nil { fmt.Println(err); os.Exit(1) }
-        control <- controlMsg{From: "fromSender", SeqId: seqId}
+        eventchan <- ppingEvent{From: "fromSender", SeqId: seqId}
         time.Sleep(interval)
     }
 }
 
-func main() {
-    parseFlags()
-    host     := HostFlag
-    number   := NumberFlag
-    timeout  := time.Duration(TimeoutFlag) * time.Millisecond
-    interval := time.Duration(IntervalFlag) * time.Millisecond
-    size     := SizeFlag
+func icmpEchoReceiver(
+        conn        net.Conn,
+        eventchan   chan ppingEvent,
+        replyCode   int,
+        number      int,
+        procId      int) {
 
-    var ipver int
-    var err   error
-    var conn  net.Conn
-    var icmpEchoRequest int
-    var icmpEchoReply   int
-    if Ip6Flag == true {
-        ipver = 6
-        icmpEchoRequest = icmpv6EchoRequest
-        icmpEchoReply   = icmpv6EchoReply
-        conn, err = net.Dial("ip6:icmp", host)
-    } else {
-        ipver = 4
-        icmpEchoRequest = icmpv4EchoRequest
-        icmpEchoReply   = icmpv4EchoReply
-        conn, err = net.Dial("ip4:icmp", host)
-    }
-
-    if err != nil { fmt.Println(err); os.Exit(1)}
-
-    procId          := os.Getpid()&0xffff
     icmpReplyBuffer := make([]byte, icmpPacketMaxSize)
 
-    var seqId int
-    var read  int
-    var reply *icmpMessage
+    var seqId   int
+    var reply   *icmpMessage
     var icmp4Payload []byte
+    var read    int
+    var err     error
 
-    var eventchan chan controlMsg   = make(chan controlMsg)
-    var replychan chan controlReply = make(chan controlReply)
-    go icmpEchoControl(conn, number, timeout, eventchan, replychan)
-    go icmpEchoSender(conn, icmpEchoRequest, procId, number, size, interval, eventchan)
-
-    fmt.Println(ipver, icmpEchoReply)
     for {
         read, err = conn.Read(icmpReplyBuffer)
         if err != nil { break }
@@ -163,7 +150,7 @@ func main() {
             payload := reply.Body
             if payload.GetProcID() == procId{
                 seqId = payload.GetSequenceID()
-                eventchan <- controlMsg{From: "fromMain", SeqId: seqId}
+                eventchan <- ppingEvent{From: "fromReceiver", SeqId: seqId}
             }
             number -= 1
             if number == 0 {
@@ -177,10 +164,9 @@ func main() {
             continue
         }
     }
-
-    finalMsg := <- replychan
-    fmt.Println("ok", finalMsg)
 }
+
+
 
 /* TODO flags
     -w
