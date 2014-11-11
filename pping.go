@@ -15,6 +15,7 @@ const (
     icmpv4EchoReply   = 0
     icmpv6EchoRequest = 128
     icmpv6EchoReply   = 129
+    icmpPacketMaxSize = 65535
 )
 
 type icmpMessage struct {
@@ -31,18 +32,155 @@ type icmpMessageBody interface {
     GetSequenceID() int
 }
 
+type controlMsg struct {
+    From    string
+    SeqId   int
+}
 
+type controlReply struct {
+    PercentLoss int
+    AverageTime int
+    MaxTime     int
+    MinTime     int
+}
 
-// BEGIN ARGUMENTS HANDLING
 var VersionFlag     bool
 var HostFlag        string
-var WarningFlag     int64
-var CriticalFlag    int64
 var SourceFlag      string
 var NumberFlag      int
 var IntervalFlag    int
 var TtlFlag         int
 var TimeoutFlag     int
+var SizeFlag        int
+var Ip6Flag         bool
+
+func icmpEchoControl(
+        conn        net.Conn,
+        number      int,
+        timeout     time.Duration,
+        eventchan   chan controlMsg,
+        replychan   chan controlReply) {
+
+    var msg controlMsg
+    for {
+        msg = <- eventchan
+        if msg.From == "fromMain" {
+            number -= 1
+        }
+        if number == 0 { break }
+    }
+    conn.Close()
+    replychan <- controlReply{
+        PercentLoss: 0,
+        AverageTime: 100,
+        MaxTime:     140,
+        MinTime:     50,
+    }
+}
+
+func icmpEchoSender(
+    conn        net.Conn,
+    requestCode int,
+    procId      int,
+    number      int,
+    size        int,
+    interval    time.Duration,
+    control     chan controlMsg) {
+    var err error
+    for i := 0; i < number; i++ {
+        seqId := i + 1
+        wb, _ := (&icmpMessage{
+            Type: requestCode,
+            Code: 0,
+            Body: &icmpEcho{
+                ID:     procId,
+                Seq:    seqId,
+                Data:   bytes.Repeat([]byte("g"), size),
+            },
+        }).Marshal()
+        _, err = conn.Write(wb)
+        if err != nil { fmt.Println(err); os.Exit(1) }
+        control <- controlMsg{From: "fromSender", SeqId: seqId}
+        time.Sleep(interval)
+    }
+}
+
+func main() {
+    parseFlags()
+    host     := HostFlag
+    number   := NumberFlag
+    timeout  := time.Duration(TimeoutFlag) * time.Millisecond
+    interval := time.Duration(IntervalFlag) * time.Millisecond
+    size     := SizeFlag
+
+    var ipver int
+    var err   error
+    var conn  net.Conn
+    var icmpEchoRequest int
+    var icmpEchoReply   int
+    if Ip6Flag == true {
+        ipver = 6
+        icmpEchoRequest = icmpv6EchoRequest
+        icmpEchoReply   = icmpv6EchoReply
+        conn, err = net.Dial("ip6:icmp", host)
+    } else {
+        ipver = 4
+        icmpEchoRequest = icmpv4EchoRequest
+        icmpEchoReply   = icmpv4EchoReply
+        conn, err = net.Dial("ip4:icmp", host)
+    }
+
+    if err != nil { fmt.Println(err); os.Exit(1)}
+
+    procId          := os.Getpid()&0xffff
+    icmpReplyBuffer := make([]byte, icmpPacketMaxSize)
+
+    var seqId int
+    var read  int
+    var reply *icmpMessage
+    var icmp4Payload []byte
+
+    var eventchan chan controlMsg   = make(chan controlMsg)
+    var replychan chan controlReply = make(chan controlReply)
+    go icmpEchoControl(conn, number, timeout, eventchan, replychan)
+    go icmpEchoSender(conn, icmpEchoRequest, procId, number, size, interval, eventchan)
+
+    fmt.Println(ipver, icmpEchoReply)
+    for {
+        read, err = conn.Read(icmpReplyBuffer)
+        if err != nil { break }
+        ipVersion := icmpReplyBuffer[0]>>4
+
+        if ipVersion == 4 {
+            if read < 28 { continue }
+            // ipHeader = icmpReplyBuffer[0:20]
+            icmp4Payload     = icmpReplyBuffer[20:read]
+            reply, err       = parseICMPMessage(icmp4Payload)
+            switch reply.Type {
+            case icmpv4EchoRequest, icmpv6EchoRequest:
+                continue
+            }
+            payload := reply.Body
+            if payload.GetProcID() == procId{
+                seqId = payload.GetSequenceID()
+                eventchan <- controlMsg{From: "fromMain", SeqId: seqId}
+            }
+            number -= 1
+            if number == 0 {
+                break
+            }
+
+        } else if ipVersion == 6 {
+            //ipHeader    = icmpReplyBuffer[0:40]
+            //icmpPayload = icmpReplyBuffer[40:read]
+            // TODO support v6
+            continue
+        }
+    }
+
+    finalMsg := <- replychan
+    fmt.Println("ok", finalMsg)
+}
 
 /* TODO flags
     -w
@@ -56,12 +194,12 @@ func init() {
     flag.BoolVar(&VersionFlag,  "version",  false, "Show version")
     flag.StringVar(&HostFlag,   "host",     "", "Target")
     flag.IntVar(&TimeoutFlag,   "timeout",  5000, "Timeout")
-    flag.Int64Var(&WarningFlag, "warning",  2000, "responce delay warning in millisecond")
-    flag.Int64Var(&CriticalFlag,"critical", 5000, "responce delay critical in millisecond")
     flag.StringVar(&SourceFlag, "source",   "", "From host or ip")
     flag.IntVar(&NumberFlag,    "number",   5, "Number of packets to send")
-    flag.IntVar(&IntervalFlag,  "interval", 80000, "Send packet interval")
+    flag.IntVar(&IntervalFlag,  "interval", 100, "Send packet interval in millisecond")
     flag.IntVar(&TtlFlag,       "ttl",      0, "TTL on outgoing packets")
+    flag.IntVar(&SizeFlag,      "size",     56,"Size of the icmp payload in octets (+8 icmp header)")
+    flag.BoolVar(&Ip6Flag,      "ipv6",     false, "Enable version 6 icmp")
 }
 
 func parseFlags() {
@@ -75,8 +213,6 @@ func parseFlags() {
         os.Exit(2)
     }
 }
-// END ARGUMENTS HANDLING
-
 
 
 func printVersion() {
@@ -125,7 +261,10 @@ func parseICMPMessage(b []byte) (*icmpMessage, error) {
     if msglen < 4 {
         return nil, errors.New("message too short")
     }
-    m := &icmpMessage{Type: int(b[0]), Code: int(b[1]), Checksum: int(b[2])<<8 | int(b[3])}
+    m := &icmpMessage{
+        Type: int(b[0]),
+        Code: int(b[1]),
+        Checksum: int(b[2])<<8 | int(b[3]) }
     if msglen > 4 {
         var err error
         switch m.Type {
@@ -174,7 +313,9 @@ func (p *icmpEcho) Marshal() ([]byte, error) {
 // parseICMPEcho parses b as an ICMP echo request or reply message body.
 func parseICMPEcho(b []byte) (*icmpEcho, error) {
     bodylen := len(b)
-    p := &icmpEcho{ID: int(b[0])<<8 | int(b[1]), Seq: int(b[2])<<8 | int(b[3])}
+    p := &icmpEcho{
+        ID:  int(b[0])<<8 | int(b[1]),
+        Seq: int(b[2])<<8 | int(b[3]) }
     if bodylen > 4 {
         p.Data = make([]byte, bodylen-4)
         copy(p.Data, b[4:])
@@ -192,84 +333,4 @@ func ipv4Payload(b []byte) []byte {
 
 func returnError(err error) {
     fmt.Println("error: ", err)
-}
-
-func returnSuccess() {
-    fmt.Println("ok")
-}
-
-func main() {
-    parseFlags()
-    timeout     := TimeoutFlag
-    host        := HostFlag
-
-    conn, err := net.Dial("ip4:icmp", host)
-    if err != nil { returnError(err); return }
-
-    conn.SetDeadline(time.Now().Add(time.Duration(timeout) * time.Second))
-    defer conn.Close()
-
-    icmpType := icmpv4EchoRequest
-    procId  := os.Getpid()&0xffff
-    seqId   := 1
-
-    wb, err := (&icmpMessage{
-        Type: icmpType,
-        Code: 0,
-        Body: &icmpEcho{
-            ID:     procId,
-            Seq:    seqId,
-            Data:   bytes.Repeat([]byte("gogoping"), 3),
-        },
-    }).Marshal()
-    if err != nil { returnError(err); return }
-
-
-    _, err = conn.Write(wb)
-    if err != nil { returnError(err); return }
-
-    var reply*icmpMessage
-    rb := make([]byte, 20+len(wb))
-    for {
-        fmt.Println("entering loop")
-        _, err = conn.Read(rb)
-        if err != nil { returnError(err); return }
-
-        fmt.Println("have read something")
-
-        rb = ipv4Payload(rb)
-
-        fmt.Println("have payload")
-        payload := reply.Body
-
-        reply, err = parseICMPMessage(rb)
-        if err != nil { returnError(err); return }
-
-        /*
-            Ignore message if it is of type icmp request. Typicaly, when
-            target machine also send ping packets to me.
-        */
-        switch reply.Type {
-            case icmpv4EchoRequest: {
-                fmt.Println("continue?")
-                continue 
-            }
-            case icmpv6EchoRequest: {
-                continue
-            }
-        }
-
-        /* 
-            Ignore icmp replies which does not comme from me, typicaly another
-            pping or *ping process running on the same host with the same target
-            as argument:
-        */
-        if procId != payload.GetProcID() { continue }
-
-        // TODO interpret sequenceId
-
-        fmt.Println("parse success", procId, seqId, payload.GetProcID(), payload.GetSequenceID(), reply.Type)
-        break
-    }
-    returnSuccess()
 }
