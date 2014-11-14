@@ -177,14 +177,14 @@ type icmpMessageBody interface {
     GetSequenceID() int
 }
 
-func (m *icmpMessage) Encode(conn net.Conn) ([]byte, error) {
+func (msg *icmpMessage) Encode(conn net.Conn) ([]byte, error) {
     var bytes []byte
-    if m.Type == icmpv4EchoRequest {
-        bytes = []byte{byte(m.Type), byte(m.Code), 0, 0}
-        if m.Body != nil && m.Body.Len() != 0 {
-            mb, err := m.Body.Encode()
+    if msg.Type == icmpv4EchoRequest {
+        bytes = []byte{byte(msg.Type), byte(msg.Code), 0, 0}
+        if msg.Body != nil && msg.Body.Len() != 0 {
+            messageBody, err := msg.Body.Encode()
             if err != nil { return nil, err }
-            bytes = append(bytes, mb...)
+            bytes = append(bytes, messageBody...)
         }
         s := computeComplementSum(bytes)
 
@@ -192,7 +192,23 @@ func (m *icmpMessage) Encode(conn net.Conn) ([]byte, error) {
         // assumption the checksum bytes are zero.
         bytes[2] ^= byte(^s & 0xff)
         bytes[3] ^= byte(^s >> 8)
-    } else if m.Type == icmpv6EchoRequest {
+    } else if msg.Type == icmpv6EchoRequest {
+        var pseudoHeader []byte
+        var localAdd    []byte
+        var remoteAdd   []byte
+        localAdd    = net.ParseIP("fe80::21f:d0ff:fe8e:795f")
+        remoteAdd   = net.ParseIP("fe80::200:24ff:fecc:2a9c")
+        pseudoHeader = append(localAdd, remoteAdd...)
+        var messageBody []byte
+        var err error
+        if msg.Body != nil && msg.Body.Len() != 0 {
+            messageBody, err = msg.Body.Encode()
+            if err != nil { return nil, err }
+        }
+        var pduLen int
+        pduLen = len(messageBody) + 4 // 4 bytes icmp header
+
+        fmt.Println(" pseudo header? ", pseudoHeader, messageBody, pduLen)
         // TODO build v6 pseudo header, add body and computeComplementSum
         // use conn to get src/dst address
     }
