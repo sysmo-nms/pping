@@ -17,31 +17,28 @@ func main() {
     parseFlags()
     host     := HostFlag
     counter  := NumberFlag
-    timeout  := time.Duration(TimeoutFlag)  * time.Millisecond
+    //timeout  := time.Duration(TimeoutFlag)  * time.Millisecond
     interval := time.Duration(IntervalFlag) * time.Millisecond
     size     := SizeFlag
 
     var err         error
     var conn        net.Conn
-    var requestCode int
-    var replyCode   int
+    var ipVersion   int
 
     if Ip6Flag == true {
-        requestCode = icmpv6EchoRequest
-        replyCode   = icmpv6EchoReply
-        conn, err   = net.Dial("ip6:icmp", host)
+        ipVersion   = 6
+        conn, err   = net.Dial("ip6:58", host)
     } else {
-        requestCode = icmpv4EchoRequest
-        replyCode   = icmpv4EchoReply
-        conn, err   = net.Dial("ip4:icmp", host)
+        ipVersion   = 4
+        conn, err   = net.Dial("ip4:1", host)
     }
     if err != nil { fmt.Println(err); os.Exit(1) }
 
     procId := os.Getpid()&0xffff
 
     var eventchan chan ppingEvent = make(chan ppingEvent)
-    go icmpEchoReceiver(conn,eventchan,replyCode,counter,procId)
-    go icmpEchoSender(conn,eventchan,requestCode,counter,procId,size,interval)
+    go icmpEchoReceiver(conn,eventchan,ipVersion,counter,procId)
+    go icmpEchoSender(conn,eventchan,ipVersion,counter,procId,size,interval)
 
     var eventMsg ppingEvent
     for {
@@ -55,19 +52,25 @@ func main() {
         if counter == 0 { break }
     }
     conn.Close()
-    fmt.Println("timeout: ",timeout)
     fmt.Println("ok")
 }
 
 func icmpEchoSender(
     conn        net.Conn,
     eventchan   chan ppingEvent,
-    requestCode int,
+    ipVersion   int,
     counter     int,
     procId      int,
     size        int,
     interval    time.Duration) {
     var err error
+
+    var requestCode int
+    if ipVersion == 4 {
+        requestCode = icmpv4EchoRequest
+    } else if ipVersion == 6 {
+        requestCode = icmpv6EchoRequest
+    }
     for i := 0; i < counter; i++ {
         seqId := i + 1
         pdu, _ := (&icmpMessage{
@@ -89,7 +92,7 @@ func icmpEchoSender(
 func icmpEchoReceiver(
         conn        net.Conn,
         eventchan   chan ppingEvent,
-        replyCode   int,
+        ipVersion   int,
         counter     int,
         procId      int) {
 
@@ -99,39 +102,59 @@ func icmpEchoReceiver(
     var reply   *icmpMessage
     var icmpPdu []byte
     var read    int
-    var ipVer   byte
+    var ip4Ver   byte
     var err     error
 
-    for {
-        read, err = conn.Read(icmpBuffer)
-        if err != nil { break }
-        ipVer = icmpBuffer[0]>>4
+    // WTF
+    // for an unknown reason, conn.Read on version 6 skipp the v6
+    // header.
+    if ipVersion == 6 {
+        for 
+        {
+            read, err = conn.Read(icmpBuffer)
 
-        if ipVer == 4 {
-            if read < 28 { continue }
-            // ipHeader = icmpBuffer[0:20]
-            icmpPdu = icmpBuffer[20:read]
-        } else if ipVer == 6 {
-            // TODO support v6
-            // if read < 48 { continue }
-            // icmpPdu = icmpBuffer[40:read]
-            continue
-        } else {
-            continue
+            if icmpBuffer[0] != byte(icmpv6EchoReply) {
+                continue
+            }
+
+            reply, err = parseICMPMessage(icmpBuffer)
+            // TODO validate checksum
+            if err != nil { continue }
+            if reply.Type == icmpv4EchoRequest { continue }
+            if reply.Type == icmpv6EchoRequest { continue }
+
+            body := reply.Body
+            if body.GetProcID() != procId { continue }
+
+            seqId = body.GetSequenceID()
+            eventchan <- ppingEvent{From: "fromReceiver", SeqId: seqId}
+            counter -= 1
+            if counter == 0 { break }
         }
+    } else if ipVersion == 4 {
+        for {
+            read, err = conn.Read(icmpBuffer)
+            if err != nil { break }
 
-        reply, err = parseICMPMessage(icmpPdu)
-        if err != nil { continue }
-        if reply.Type == icmpv4EchoRequest { continue }
-        if reply.Type == icmpv6EchoRequest { continue }
+            ip4Ver = icmpBuffer[0]>>4
+            if ip4Ver != 4 {
+                continue
+            }
+            icmpPdu = icmpBuffer[20:read]
 
-        body := reply.Body
-        if body.GetProcID() != procId { continue }
+            reply, err = parseICMPMessage(icmpPdu)
+            if err != nil { continue }
+            if reply.Type == icmpv4EchoRequest { continue }
+            if reply.Type == icmpv6EchoRequest { continue }
 
-        seqId = body.GetSequenceID()
-        eventchan <- ppingEvent{From: "fromReceiver", SeqId: seqId}
-        counter -= 1
-        if counter == 0 { break }
+            body := reply.Body
+            if body.GetProcID() != procId { continue }
+
+            seqId = body.GetSequenceID()
+            eventchan <- ppingEvent{From: "fromReceiver", SeqId: seqId}
+            counter -= 1
+            if counter == 0 { break }
+        }
     }
 }
 
@@ -178,41 +201,56 @@ type icmpMessageBody interface {
 }
 
 func (msg *icmpMessage) Encode(conn net.Conn) ([]byte, error) {
-    var bytes []byte
+    var pdu []byte
     if msg.Type == icmpv4EchoRequest {
-        bytes = []byte{byte(msg.Type), byte(msg.Code), 0, 0}
+        pdu = []byte{byte(msg.Type), byte(msg.Code), 0, 0}
         if msg.Body != nil && msg.Body.Len() != 0 {
             messageBody, err := msg.Body.Encode()
             if err != nil { return nil, err }
-            bytes = append(bytes, messageBody...)
+            pdu = append(pdu, messageBody...)
         }
-        s := computeComplementSum(bytes)
+        s := computeComplementSum(pdu)
 
         // Place checksum back in header; using ^= avoids the
-        // assumption the checksum bytes are zero.
-        bytes[2] ^= byte(^s & 0xff)
-        bytes[3] ^= byte(^s >> 8)
+        // assumption the checksum pdu are zero.
+        pdu[2] ^= byte(^s & 0xff)
+        pdu[3] ^= byte(^s >> 8)
     } else if msg.Type == icmpv6EchoRequest {
+        // build icmp pdu in pdu var
+        pdu = []byte{byte(msg.Type), byte(msg.Code), 0, 0}
+        if msg.Body != nil && msg.Body.Len() != 0 {
+            messageBody, err := msg.Body.Encode()
+            if err != nil { return nil, err }
+            pdu = append(pdu, messageBody...)
+        }
+
+        // BUILD PSEUDO HEADER
         var pseudoHeader []byte
-        var localAdd    []byte
-        var remoteAdd   []byte
+        // append source and dest address
+        var localAdd     []byte
+        var remoteAdd    []byte
         localAdd    = net.ParseIP("fe80::21f:d0ff:fe8e:795f")
         remoteAdd   = net.ParseIP("fe80::200:24ff:fecc:2a9c")
         pseudoHeader = append(localAdd, remoteAdd...)
-        var messageBody []byte
-        var err error
-        if msg.Body != nil && msg.Body.Len() != 0 {
-            messageBody, err = msg.Body.Encode()
-            if err != nil { return nil, err }
-        }
-        var pduLen int
-        pduLen = len(messageBody) + 4 // 4 bytes icmp header
-
-        fmt.Println(" pseudo header? ", pseudoHeader, messageBody, pduLen)
-        // TODO build v6 pseudo header, add body and computeComplementSum
-        // use conn to get src/dst address
+        // append ICMPv6 len of pdu
+        var pduLen []byte
+        // TODO pdulen is fixed
+        pduLen = []byte{0,0,0,64}
+        pseudoHeader = append(pseudoHeader, pduLen...)
+        // append Zero and Next header(58) field
+        var lastHeaderField []byte
+        lastHeaderField = []byte{0,0,0,58}
+        pseudoHeader = append(pseudoHeader, lastHeaderField...)
+        // append icmp packet
+        pseudoHeader = append(pseudoHeader, pdu...)
+        // compute checksum
+        s := computeComplementSum(pseudoHeader)
+   
+        // Place checksum in pdu
+        pdu[2] ^= byte(^s & 0xff)
+        pdu[3] ^= byte(^s >> 8)
     }
-    return bytes, nil
+    return pdu, nil
 }
 
 // parseICMPMessage parses b as an ICMP message.
