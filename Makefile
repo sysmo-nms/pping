@@ -22,7 +22,7 @@ $(PPING): $(PPING_SRC)
 
 start: $(PPING)
 	$(PPING) --host=192.168.0.5 --timeout=5000 --number=2 --interval=50
-	$(PPING) --host=fe80::200:24ff:fecc:2a9c%eth0 --timeout=5000 --number=2 --interval=50 --ipv6=true
+	$(PPING) --host=fe80::200:24ff:fecc:2a9c%eth0 --timeout=5000 --number=2 --interval=50 --ipv6=true --ipv6-if=eth0 --size=5000
 	@#$(PPING) --host=2a00:1450:4013:c01::71 --timeout=5000 --number=2 --interval=50
 	@#$(PPING) --host=www.google.fr --timeout=5000 --number=2 --interval=50
 

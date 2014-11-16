@@ -7,39 +7,75 @@ import "errors"
 import "net"
 import "os"
 import "time"
+import "strings"
 
 type ppingEvent struct {
     From    string
     SeqId   int
 }
 
+var VersionFlag     bool
+var HostFlag        string
+var SourceFlag      string
+var NumberFlag      int
+var IntervalFlag    int
+var TtlFlag         int
+var TimeoutFlag     int
+var SizeFlag        int
+var Ip6Flag         bool
+var Ip6IfFlag       string
+
+var LocalAddr       string
+var RemoteAddr      string
+
+func init() {
+    flag.BoolVar(&VersionFlag,  "version",  false, "Show version")
+    flag.StringVar(&HostFlag,   "host",     "", "Target")
+    flag.IntVar(&TimeoutFlag,   "timeout",  5000, "Timeout")
+    flag.StringVar(&SourceFlag, "source",   "", "From host or ip")
+    flag.IntVar(&NumberFlag,    "number",   5, "Number of packets to send")
+    flag.IntVar(&IntervalFlag,  "interval", 100, "Send packet interval in millisecond")
+    flag.IntVar(&TtlFlag,       "ttl",      0, "TTL on outgoing packets")
+    flag.IntVar(&SizeFlag,      "size",     56,"Size of the icmp body in octets")
+    flag.BoolVar(&Ip6Flag,      "ipv6",     false, "Enable version 6 icmp")
+    flag.StringVar(&Ip6IfFlag,  "ipv6-if",  "", "Required if host is an ipv6 link-local address")
+}
+
 func main() {
     parseFlags()
-    host     := HostFlag
-    counter  := NumberFlag
     //timeout  := time.Duration(TimeoutFlag)  * time.Millisecond
     interval := time.Duration(IntervalFlag) * time.Millisecond
-    size     := SizeFlag
 
+    fmt.Println(strings.Join([]string{HostFlag, Ip6IfFlag}, "%"))
     var err         error
     var conn        net.Conn
     var ipVersion   int
+    var host        string
 
     if Ip6Flag == true {
         ipVersion   = 6
+        if Ip6IfFlag != "" {
+            host = strings.Join([]string{HostFlag,Ip6IfFlag}, "%") 
+        } else {
+            host = HostFlag
+        }
         conn, err   = net.Dial("ip6:58", host)
     } else {
         ipVersion   = 4
+        host = HostFlag
         conn, err   = net.Dial("ip4:1", host)
     }
     if err != nil { fmt.Println(err); os.Exit(1) }
+    LocalAddr   = conn.LocalAddr().String()
+    RemoteAddr  = conn.RemoteAddr().String()
 
     procId := os.Getpid()&0xffff
 
     var eventchan chan ppingEvent = make(chan ppingEvent)
-    go icmpEchoReceiver(conn,eventchan,ipVersion,counter,procId)
-    go icmpEchoSender(conn,eventchan,ipVersion,counter,procId,size,interval)
+    go icmpEchoReceiver(conn,eventchan,ipVersion,procId)
+    go icmpEchoSender(conn,eventchan,ipVersion,procId,interval)
 
+    var counter int = NumberFlag
     var eventMsg ppingEvent
     for {
         eventMsg = <- eventchan
@@ -59,9 +95,7 @@ func icmpEchoSender(
     conn        net.Conn,
     eventchan   chan ppingEvent,
     ipVersion   int,
-    counter     int,
     procId      int,
-    size        int,
     interval    time.Duration) {
     var err error
 
@@ -71,7 +105,7 @@ func icmpEchoSender(
     } else if ipVersion == 6 {
         requestCode = icmpv6EchoRequest
     }
-    for i := 0; i < counter; i++ {
+    for i := 0; i < NumberFlag; i++ {
         seqId := i + 1
         pdu, _ := (&icmpMessage{
             Type: requestCode,
@@ -79,7 +113,7 @@ func icmpEchoSender(
             Body: &icmpBody{
                 ID:     procId,
                 Seq:    seqId,
-                Data:   bytes.Repeat([]byte("g"), size),
+                Data:   bytes.Repeat([]byte("g"), SizeFlag),
             },
         }).Encode(conn)
         _, err = conn.Write(pdu)
@@ -93,7 +127,6 @@ func icmpEchoReceiver(
         conn        net.Conn,
         eventchan   chan ppingEvent,
         ipVersion   int,
-        counter     int,
         procId      int) {
 
     icmpBuffer := make([]byte, icmpPacketMaxSize)
@@ -104,6 +137,7 @@ func icmpEchoReceiver(
     var read    int
     var ip4Ver   byte
     var err     error
+    var counter int = NumberFlag
 
     // WTF
     // for an unknown reason, conn.Read on version 6 skipp the v6
@@ -229,14 +263,13 @@ func (msg *icmpMessage) Encode(conn net.Conn) ([]byte, error) {
         // append source and dest address
         var localAdd     []byte
         var remoteAdd    []byte
-        localAdd    = net.ParseIP("fe80::21f:d0ff:fe8e:795f")
-        remoteAdd   = net.ParseIP("fe80::200:24ff:fecc:2a9c")
+        localAdd    = net.ParseIP(LocalAddr)
+        remoteAdd   = net.ParseIP(RemoteAddr)
         pseudoHeader = append(localAdd, remoteAdd...)
         // append ICMPv6 len of pdu
-        var pduLen []byte
-        // TODO pdulen is fixed
-        pduLen = []byte{0,0,0,64}
-        pseudoHeader = append(pseudoHeader, pduLen...)
+        // !!WTF how can this work when only specifying the last byte?
+        pduLenHead := []byte{0,0,0,byte(len(pdu))}
+        pseudoHeader = append(pseudoHeader, pduLenHead...)
         // append Zero and Next header(58) field
         var lastHeaderField []byte
         lastHeaderField = []byte{0,0,0,58}
@@ -318,42 +351,6 @@ func (p *icmpBody) Encode()         ([]byte, error) {
     b[2], b[3] = byte(p.Seq>>8), byte(p.Seq&0xff)
     copy(b[4:], p.Data)
     return b, nil
-}
-
-
-
-
-
-/* 
-FLAGS PART:
-TODO flags
-    -w
-    -c
-    -s
-    -n
-    -i
-    -l
-*/
-var VersionFlag     bool
-var HostFlag        string
-var SourceFlag      string
-var NumberFlag      int
-var IntervalFlag    int
-var TtlFlag         int
-var TimeoutFlag     int
-var SizeFlag        int
-var Ip6Flag         bool
-
-func init() {
-    flag.BoolVar(&VersionFlag,  "version",  false, "Show version")
-    flag.StringVar(&HostFlag,   "host",     "", "Target")
-    flag.IntVar(&TimeoutFlag,   "timeout",  5000, "Timeout")
-    flag.StringVar(&SourceFlag, "source",   "", "From host or ip")
-    flag.IntVar(&NumberFlag,    "number",   5, "Number of packets to send")
-    flag.IntVar(&IntervalFlag,  "interval", 100, "Send packet interval in millisecond")
-    flag.IntVar(&TtlFlag,       "ttl",      0, "TTL on outgoing packets")
-    flag.IntVar(&SizeFlag,      "size",     56,"Size of the icmp body in octets")
-    flag.BoolVar(&Ip6Flag,      "ipv6",     false, "Enable version 6 icmp")
 }
 
 func parseFlags() {
