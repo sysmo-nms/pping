@@ -32,6 +32,7 @@ var TimeoutFlag     int
 var SizeFlag        int
 var Ip6Flag         bool
 var Ip6IfFlag       string
+var HelpFlag        bool
 
 var LocalAddr       string
 var RemoteAddr      string
@@ -45,6 +46,7 @@ func init() {
     flag.IntVar(&SizeFlag,      "size",     56,"Size of the icmp body in octets")
     flag.BoolVar(&Ip6Flag,      "ipv6",     false, "Enable version 6 icmp")
     flag.StringVar(&Ip6IfFlag,  "ipv6-if",  "", "Required if host is an ipv6 link-local address")
+    flag.BoolVar(&HelpFlag,     "help",    false, "Arguments description")
 }
 
 func main() {
@@ -151,10 +153,11 @@ func main() {
         percentPktsLost = (100 / NumberFlag) * packetsLost
     }
 
-    fmt.Println("Percent packets lost: ", percentPktsLost)
-    fmt.Println("Max return duration:  ", maxDuration)
-    fmt.Println("Min return duration:  ", minDuration)
-    fmt.Println("Avg return duration:  ", averageDuration)
+    fmt.Printf("<PPING_RETURN>,%d,%d,%d,%d",
+        percentPktsLost,
+        minDuration/1000000,
+        averageDuration/1000000,
+        maxDuration/1000000)
     os.Exit(0)
 }
 
@@ -429,14 +432,18 @@ func (p *icmpBody) Encode()         ([]byte, error) {
 
 func parseFlags() {
     flag.Parse()
-
     if VersionFlag == true {
         printVersion()
         os.Exit(0)
     } else if HostFlag == "" { // MINIMUM MANDATORY
-        flag.PrintDefaults()
+        printHelp()
         os.Exit(2)
     }
 }
 
+func printHelp() {
+    flag.PrintDefaults()
+    fmt.Println("pping return a comma separated value meaning:")
+    fmt.Println("<PPING_RETURN>,percent_pkts_loss,min_reply_duration,avg_reply_duration,max_reply_duration")
+}
 func printVersion() { fmt.Printf("go_check_icmp V0.1\n") }
