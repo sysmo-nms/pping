@@ -10,8 +10,16 @@ import "time"
 import "strings"
 
 type ppingEvent struct {
-    From    string
-    SeqId   int
+    Msg         string
+    SeqId       int
+    EventTime   time.Time
+}
+
+type ppingInfo struct {
+    SentTime        time.Time
+    ReceivedTime    time.Time
+    Lost            bool
+    Handled         bool
 }
 
 var VersionFlag     bool
@@ -32,10 +40,8 @@ func init() {
     flag.BoolVar(&VersionFlag,  "version",  false, "Show version")
     flag.StringVar(&HostFlag,   "host",     "", "Target")
     flag.IntVar(&TimeoutFlag,   "timeout",  5000, "Timeout")
-    flag.StringVar(&SourceFlag, "source",   "", "From host or ip")
     flag.IntVar(&NumberFlag,    "number",   5, "Number of packets to send")
     flag.IntVar(&IntervalFlag,  "interval", 100, "Send packet interval in millisecond")
-    flag.IntVar(&TtlFlag,       "ttl",      0, "TTL on outgoing packets")
     flag.IntVar(&SizeFlag,      "size",     56,"Size of the icmp body in octets")
     flag.BoolVar(&Ip6Flag,      "ipv6",     false, "Enable version 6 icmp")
     flag.StringVar(&Ip6IfFlag,  "ipv6-if",  "", "Required if host is an ipv6 link-local address")
@@ -43,10 +49,9 @@ func init() {
 
 func main() {
     parseFlags()
-    //timeout  := time.Duration(TimeoutFlag)  * time.Millisecond
+    timeout  := time.Duration(TimeoutFlag)  * time.Millisecond
     interval := time.Duration(IntervalFlag) * time.Millisecond
 
-    fmt.Println(strings.Join([]string{HostFlag, Ip6IfFlag}, "%"))
     var err         error
     var conn        net.Conn
     var ipVersion   int
@@ -73,22 +78,84 @@ func main() {
 
     var eventchan chan ppingEvent = make(chan ppingEvent)
     go icmpEchoReceiver(conn,eventchan,ipVersion,procId)
-    go icmpEchoSender(conn,eventchan,ipVersion,procId,interval)
+    go icmpEchoSender(conn,eventchan,ipVersion,procId,interval,timeout)
 
     var counter int = NumberFlag
     var eventMsg ppingEvent
+
+    evalReturns := make(map[int]*ppingInfo)
+    for i := 0; i < NumberFlag; i++ {
+        evalReturns[i + 1] = new(ppingInfo)
+    }
+
     for {
         eventMsg = <- eventchan
-        if eventMsg.From == "fromReceiver" {
-            fmt.Println("from receiver", eventMsg.SeqId)
-            counter -= 1
-        } else if eventMsg.From == "fromSender" {
-            fmt.Println("from sender", eventMsg.SeqId)
+        if eventMsg.Msg == "Sent: " {
+            evalReturns[eventMsg.SeqId].SentTime = eventMsg.EventTime
+        } else if eventMsg.Msg == "Received: " {
+            if evalReturns[eventMsg.SeqId].Handled == true {
+                continue
+            }
+            evalReturns[eventMsg.SeqId].ReceivedTime = eventMsg.EventTime
+            evalReturns[eventMsg.SeqId].Handled = true
+            counter -= 1;
+        } else if eventMsg.Msg == "Expired: " {
+            if evalReturns[eventMsg.SeqId].Handled == true {
+                continue
+            }
+            evalReturns[eventMsg.SeqId].Lost    = true
+            evalReturns[eventMsg.SeqId].Handled = true
+            counter -= 1;
         }
-        if counter == 0 { break }
+        if counter == 0 {
+            break
+        }
     }
+
     conn.Close()
-    fmt.Println("ok")
+    var packetsLost     int   = 0
+    var maxDuration     int64 = 0
+    var minDuration     int64 = 0
+    var totalDuration   int64 = 0
+
+    for _, val := range evalReturns {
+        if val.Lost == true {
+            packetsLost ++
+            continue
+        }
+        travelTime := val.ReceivedTime.Sub(val.SentTime).Nanoseconds()
+        if maxDuration == 0 || maxDuration < travelTime {
+            maxDuration = travelTime
+        }
+        if minDuration == 0 || minDuration > travelTime {
+            minDuration = travelTime
+        }
+        totalDuration += travelTime
+    }
+
+    var packetsArrived  int
+    var averageDuration int64 = 0
+    var percentPktsLost int
+
+    packetsArrived = NumberFlag - packetsLost
+
+    if totalDuration == 0 || packetsArrived == 0 {
+        averageDuration = 0
+    } else {
+        averageDuration = totalDuration / int64(packetsArrived)
+    }
+    
+    if NumberFlag == packetsLost {
+        percentPktsLost = 100
+    } else {
+        percentPktsLost = (100 / NumberFlag) * packetsLost
+    }
+
+    fmt.Println("Percent packets lost: ", percentPktsLost)
+    fmt.Println("Max return duration:  ", maxDuration)
+    fmt.Println("Min return duration:  ", minDuration)
+    fmt.Println("Avg return duration:  ", averageDuration)
+    os.Exit(0)
 }
 
 func icmpEchoSender(
@@ -96,7 +163,8 @@ func icmpEchoSender(
     eventchan   chan ppingEvent,
     ipVersion   int,
     procId      int,
-    interval    time.Duration) {
+    interval    time.Duration,
+    timeout     time.Duration) {
     var err error
 
     var requestCode int
@@ -113,14 +181,20 @@ func icmpEchoSender(
             Body: &icmpBody{
                 ID:     procId,
                 Seq:    seqId,
-                Data:   bytes.Repeat([]byte("g"), SizeFlag),
+                Data:   bytes.Repeat([]byte("n"), SizeFlag),
             },
         }).Encode(conn)
         _, err = conn.Write(pdu)
         if err != nil { fmt.Println(err); os.Exit(1) }
-        eventchan <- ppingEvent{From: "fromSender", SeqId: seqId}
+        eventchan <- ppingEvent{Msg: "Sent: ", SeqId: seqId, EventTime: time.Now()}
+        go icmpExpireIn(timeout, seqId, eventchan)
         time.Sleep(interval)
     }
+}
+
+func icmpExpireIn(timeout time.Duration, seqId int, eventchan chan ppingEvent) {
+    time.Sleep(timeout)
+    eventchan <- ppingEvent{Msg: "Expired: ", SeqId: seqId}
 }
 
 func icmpEchoReceiver(
@@ -135,7 +209,7 @@ func icmpEchoReceiver(
     var reply   *icmpMessage
     var icmpPdu []byte
     var read    int
-    var ip4Ver   byte
+    var ip4Ver  byte
     var err     error
     var counter int = NumberFlag
 
@@ -161,7 +235,7 @@ func icmpEchoReceiver(
             if body.GetProcID() != procId { continue }
 
             seqId = body.GetSequenceID()
-            eventchan <- ppingEvent{From: "fromReceiver", SeqId: seqId}
+            eventchan <- ppingEvent{Msg: "Received: ", SeqId: seqId, EventTime: time.Now()}
             counter -= 1
             if counter == 0 { break }
         }
@@ -185,7 +259,7 @@ func icmpEchoReceiver(
             if body.GetProcID() != procId { continue }
 
             seqId = body.GetSequenceID()
-            eventchan <- ppingEvent{From: "fromReceiver", SeqId: seqId}
+            eventchan <- ppingEvent{Msg: "Received: ", SeqId: seqId, EventTime: time.Now()}
             counter -= 1
             if counter == 0 { break }
         }
