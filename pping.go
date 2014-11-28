@@ -33,11 +33,13 @@ var SizeFlag        int
 var Ip6Flag         bool
 var Ip6IfFlag       string
 var HelpFlag        bool
+var InteractiveFlag bool
 
 var LocalAddr       string
 var RemoteAddr      string
 
 func init() {
+    flag.BoolVar(&InteractiveFlag,  "interactive",  false, "Enable interactive mode")
     flag.BoolVar(&VersionFlag,  "version",  false, "Show version")
     flag.StringVar(&HostFlag,   "host",     "", "Target")
     flag.IntVar(&TimeoutFlag,   "timeout",  5000, "Timeout")
@@ -100,14 +102,20 @@ func main() {
             }
             evalReturns[eventMsg.SeqId].ReceivedTime = eventMsg.EventTime
             evalReturns[eventMsg.SeqId].Handled = true
-            counter -= 1;
+            counter -= 1
+            if InteractiveFlag {
+                fmt.Println(SizeFlag,
+                    "bytes from", RemoteAddr,
+                    ": icmp_seq=", eventMsg.SeqId)
+            }
+
         } else if eventMsg.Msg == "Expired: " {
             if evalReturns[eventMsg.SeqId].Handled == true {
                 continue
             }
             evalReturns[eventMsg.SeqId].Lost    = true
             evalReturns[eventMsg.SeqId].Handled = true
-            counter -= 1;
+            counter -= 1
         }
         if counter == 0 {
             break
@@ -153,11 +161,25 @@ func main() {
         percentPktsLost = (100 / NumberFlag) * packetsLost
     }
 
-    fmt.Printf("<PPING_RETURN>,%d,%d,%d,%d",
-        percentPktsLost,
-        minDuration/1000000,
-        averageDuration/1000000,
-        maxDuration/1000000)
+    if InteractiveFlag {
+        fmt.Println("---", RemoteAddr, "ping statistics ---")
+        fmt.Println(
+            NumberFlag, "packets transmitted,",
+            packetsArrived , "received,",
+            percentPktsLost, "% packet loss")
+        fmt.Println("rtt min/avg/max = ",
+            minDuration/1000000, "/",
+            averageDuration/1000000, "/",
+            maxDuration/1000000, " ms")
+
+    } else {
+        fmt.Printf("<PPING_RETURN>,%d,%d,%d,%d",
+            percentPktsLost,
+            minDuration/1000000,
+            averageDuration/1000000,
+            maxDuration/1000000)
+    }
+
     os.Exit(0)
 }
 
