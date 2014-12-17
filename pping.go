@@ -61,7 +61,10 @@ func main() {
     var ipVersion   int
     var host        string
 
-    if Ip6Flag == true {
+
+    testip := net.ParseIP(HostFlag)
+
+    if testip.To4 == nil {
         ipVersion   = 6
         if Ip6IfFlag != "" {
             host = strings.Join([]string{HostFlag,Ip6IfFlag}, "%") 
@@ -70,6 +73,10 @@ func main() {
         }
         conn, err   = net.Dial("ip6:58", host)
     } else {
+        if Ip6Flag == true {
+            fmt.Println("Host is not a valid version 6 IP, when it is required")
+            os.Exit(1)
+        }
         ipVersion   = 4
         host = HostFlag
         conn, err   = net.Dial("ip4:1", host)
