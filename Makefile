@@ -15,14 +15,18 @@ GO_BUILD = $(GO) build
 PPING_SRC = $(SRC_DIR)/pping.go
 PPING     = $(BIN_DIR)/pping$(EXTENTION)
 
-$(PPING): $(PPING_SRC)
+all: $(PPING)
+
+$(BIN_DIR)/pping.exe:
+	$(GO_BUILD) -o $(PPING) $(PPING_SRC)
+
+$(BIN_DIR)/pping:
 	$(GO_BUILD) -o $(PPING) $(PPING_SRC)
 	sudo chown root $(PPING)
 	sudo chmod 4555 $(PPING)
 
 start: $(PPING)
 	$(PPING) --host=192.168.0.5 --timeout=5000 --number=6 --interval=50
-	$(PPING) --host=fe80::200:24ff:fecc:2a9c --timeout=5000 --number=2 --interval=50 --ipv6=true --ipv6-if=eth0 --size=5000
 	$(PPING) --host=www.google.fr --timeout=5000 --number=6 --interval=50 --interactive=true
 	$(PPING) --host=10.1.1.1 --timeout=5000 --number=6 --interval=50
 
