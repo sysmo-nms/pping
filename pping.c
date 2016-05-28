@@ -22,6 +22,7 @@
  * SOFTWARE.
  */
 #include "stdio.h"
+#include "cargo.h"
 
 int main(int argc, char* argv[])
 {
