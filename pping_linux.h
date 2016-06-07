@@ -27,18 +27,39 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include "clog.h"
+#include <netdb.h>
 
-struct in_addr* parse_address(char* target_string)
+
+static struct in_addr* pping_target = NULL;
+
+void ppCleanup()
 {
 
-    struct in_addr* target = malloc(sizeof(struct in_addr));
-    if (inet_aton(target_string, target) == 0)
+    free(pping_target);
+
+}
+
+void ppPingAllowed()
+{
+    if (getuid() != 0) {
+        fprintf(stderr, "Pping: root privileges needed.\n");
+        exit(1);
+    }
+}
+
+struct in_addr* ppParseAddress(char* target_string)
+{
+
+    pping_target = malloc(sizeof(struct in_addr));
+    atexit(&ppCleanup);
+
+    if (inet_aton(target_string, pping_target) == 0)
     {
         fprintf(stderr, "\"%s\" is not a valid IP address\n", target_string);
         exit(1);
     }
-    return target;
+
+    return pping_target;
 
 }
 
