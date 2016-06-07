@@ -21,31 +21,25 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-#include <stdlib.h>
-#include <stdio.h>
-#include <cargo.h>
+#ifndef PPING_LINUX
+#define PPING_LINUX
 
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include "clog.h"
 
-#ifdef linux
-#include "pping_linux.h"
-#elif  _WIN32
-#include "pping_win32.h"
-#endif // LINUX
-
-int main(int argc, char* argv[])
+struct in_addr* parse_address(char* target_string)
 {
 
-    char* target_string = cargoFlag("host", "", argc, argv);
-    char* icmp_version  = cargoFlag("version", "4", argc, argv);
-
-    struct in_addr *target = parse_address(target_string);
-
-    if (strcmp(icmp_version, "4") == 0) {
-        printf("IPV4 mode\n");
-    } else if (strcmp(icmp_version, "6") == 0) {
-        printf("IPV6 mode\n");
+    struct in_addr* target = malloc(sizeof(struct in_addr));
+    if (inet_aton(target_string, target) == 0)
+    {
+        fprintf(stderr, "\"%s\" is not a valid IP address\n", target_string);
+        exit(1);
     }
-
-    return 0;
+    return target;
 
 }
+
+#endif // PPING_LINUX

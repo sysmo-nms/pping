@@ -14,7 +14,7 @@ clean_all:
 	make -C build $@
 ' > Makefile
 
-git submodule update --init deps/cargo
+git submodule update --init
 
 # cleanup build dir if exist
 rm -rf build
