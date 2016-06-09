@@ -1,3 +1,23 @@
+/*
+ * Sysmo NMS Network Management and Monitoring solution (http://www.sysmo.io)
+ *
+ * Copyright (c) 2012-2015 Sebastien Serre <ssbx@sysmo.io>
+ *
+ * This file is part of Sysmo NMS.
+ *
+ * Sysmo NMS is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * Sysmo NMS is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Sysmo.  If not, see <http://www.gnu.org/licenses/>.
+ */
 package main
 
 import "fmt"
@@ -39,16 +59,19 @@ var LocalAddr       string
 var RemoteAddr      string
 
 func init() {
-    flag.BoolVar(&InteractiveFlag,  "interactive",  false, "Enable interactive mode")
-    flag.BoolVar(&VersionFlag,  "version",  false, "Show version")
-    flag.StringVar(&HostFlag,   "host",     "", "Target")
-    flag.IntVar(&TimeoutFlag,   "timeout",  5000, "Timeout")
-    flag.IntVar(&NumberFlag,    "number",   5, "Number of packets to send")
-    flag.IntVar(&IntervalFlag,  "interval", 100, "Send packet interval in millisecond")
-    flag.IntVar(&SizeFlag,      "size",     56,"Size of the icmp body in octets")
-    flag.BoolVar(&Ip6Flag,      "ipv6",     false, "Enable version 6 icmp")
-    flag.StringVar(&Ip6IfFlag,  "ipv6-if",  "", "Required if host is an ipv6 link-local address")
-    flag.BoolVar(&HelpFlag,     "help",    false, "Arguments description")
+    flag.BoolVar(&InteractiveFlag, "interactive", false,
+                                "Enable interactive mode")
+    flag.BoolVar(&VersionFlag, "version", false, "Show version")
+    flag.StringVar(&HostFlag, "host", "", "Target")
+    flag.IntVar(&TimeoutFlag, "timeout", 5000, "Timeout")
+    flag.IntVar(&NumberFlag, "number", 5, "Number of packets to send")
+    flag.IntVar(&IntervalFlag, "interval", 100,
+                                "Send packet interval in millisecond")
+    flag.IntVar(&SizeFlag, "size", 56,"Size of the icmp body in octets")
+    flag.BoolVar(&Ip6Flag, "ipv6", false, "Enable version 6 icmp")
+    flag.StringVar(&Ip6IfFlag, "ipv6-if", "",
+                               "Required if host is an ipv6 link-local address")
+    flag.BoolVar(&HelpFlag, "help", false, "Arguments description")
 }
 
 func main() {
@@ -64,24 +87,26 @@ func main() {
 
     testip := net.ParseIP(HostFlag)
 
+
     if testip.To4 == nil {
         ipVersion   = 6
         if Ip6IfFlag != "" {
-            host = strings.Join([]string{HostFlag,Ip6IfFlag}, "%") 
+            host = strings.Join([]string{HostFlag,Ip6IfFlag}, "%")
         } else {
             host = HostFlag
         }
         conn, err   = net.Dial("ip6:58", host)
     } else {
         if Ip6Flag == true {
-            fmt.Println("Host is not a valid version 6 IP, when it is required")
+            fmt.Println(
+            "Host is not a valid version 6 IP, when it is required")
             os.Exit(1)
         }
         ipVersion   = 4
         host = HostFlag
         conn, err   = net.Dial("ip4:1", host)
     }
-    if err != nil { fmt.Println(err); os.Exit(1) }
+    if err != nil { fmt.Println(err, " when host is: ", host); os.Exit(1) }
     LocalAddr   = conn.LocalAddr().String()
     RemoteAddr  = conn.RemoteAddr().String()
 
@@ -161,7 +186,7 @@ func main() {
     } else {
         averageDuration = totalDuration / int64(packetsArrived)
     }
-    
+
     if NumberFlag == packetsLost {
         percentPktsLost = 100
     } else {
@@ -218,7 +243,8 @@ func icmpEchoSender(
         }).Encode(conn)
         _, err = conn.Write(pdu)
         if err != nil { fmt.Println(err); os.Exit(1) }
-        eventchan <- ppingEvent{Msg: "Sent: ", SeqId: seqId, EventTime: time.Now()}
+        eventchan <-
+            ppingEvent{Msg: "Sent: ", SeqId: seqId, EventTime: time.Now()}
         go icmpExpireIn(timeout, seqId, eventchan)
         time.Sleep(interval)
     }
@@ -249,7 +275,7 @@ func icmpEchoReceiver(
     // for an unknown reason, conn.Read on version 6 skipp the v6
     // header.
     if ipVersion == 6 {
-        for 
+        for
         {
             read, err = conn.Read(icmpBuffer)
 
@@ -267,7 +293,8 @@ func icmpEchoReceiver(
             if body.GetProcID() != procId { continue }
 
             seqId = body.GetSequenceID()
-            eventchan <- ppingEvent{Msg: "Received: ", SeqId: seqId, EventTime: time.Now()}
+            eventchan <-
+              ppingEvent{Msg: "Received: ", SeqId: seqId, EventTime: time.Now()}
             counter -= 1
             if counter == 0 { break }
         }
@@ -291,7 +318,8 @@ func icmpEchoReceiver(
             if body.GetProcID() != procId { continue }
 
             seqId = body.GetSequenceID()
-            eventchan <- ppingEvent{Msg: "Received: ", SeqId: seqId, EventTime: time.Now()}
+            eventchan <-
+              ppingEvent{Msg: "Received: ", SeqId: seqId, EventTime: time.Now()}
             counter -= 1
             if counter == 0 { break }
         }
@@ -311,11 +339,6 @@ func computeComplementSum(bytes []byte) uint32 {
     sum = sum + sum>>16
     return sum
 }
-
-
-
-
-
 
 /* ICMP PART */
 const (
@@ -384,7 +407,7 @@ func (msg *icmpMessage) Encode(conn net.Conn) ([]byte, error) {
         pseudoHeader = append(pseudoHeader, pdu...)
         // compute checksum
         s := computeComplementSum(pseudoHeader)
-   
+
         // Place checksum in pdu
         pdu[2] ^= byte(^s & 0xff)
         pdu[3] ^= byte(^s >> 8)
@@ -405,7 +428,8 @@ func parseICMPMessage(b []byte) (*icmpMessage, error) {
     if msglen > 4 {
         var err error
         switch m.Type {
-        case icmpv4EchoRequest, icmpv4EchoReply, icmpv6EchoRequest, icmpv6EchoReply:
+        case icmpv4EchoRequest, icmpv4EchoReply,
+             icmpv6EchoRequest, icmpv6EchoReply:
             m.Body, err = parseICMPEcho(b[4:])
             if err != nil {
                 return nil, err
@@ -427,14 +451,6 @@ func parseICMPEcho(b []byte) (*icmpBody, error) {
     }
     return p, nil
 }
-
-
-
-
-
-
-
-
 
 // imcpBody represenets an ICMP echo request or reply message body.
 type icmpBody struct {
